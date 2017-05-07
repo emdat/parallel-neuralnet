@@ -14,7 +14,6 @@ file src/network.py.
 Link to file: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/mnist_loader.py
 """
 
-__author__ = 'm.bashari'
 import random
 import numpy as np
 from sklearn import datasets, linear_model
