@@ -15,6 +15,7 @@ Link to file: https://github.com/mnielsen/neural-networks-and-deep-learning/blob
 """
 
 import random
+import copy
 import numpy as np
 #from sklearn import datasets, linear_model
 #from sklearn.utils import shuffle
@@ -72,7 +73,7 @@ class parallel_network(object):
         num_examples = len(X)
         self.sgd(X, y, num_examples, num_epochs, test_data, mini_batch_sz, learning_rate)
     
-    def sgd(self, X, y, num_examples, num_epochs, test_data, mini_batch_sz, learning_rate, reg_lambda=0.01):
+    def sgd(self, X, y, num_examples, num_epochs, test_data, mini_batch_sz, learning_rate, reg_lambda=0.01, npf=1):
         if test_data: 
             n_test = len(test_data[0])
       
@@ -81,20 +82,22 @@ class parallel_network(object):
         nprocs = comm.Get_size()
         rank   = comm.Get_rank()
       
-        num_workers = nprocs-1
-        num_batches = num_examples/mini_batch_sz
-        batches_per_worker = num_batches/num_workers
+        num_workers = nprocs
         num_ex_per_worker = num_examples/num_workers
-        
-        # Master sends subset of training data to workers (None element to itself)
+        batches_per_worker = num_ex_per_worker/mini_batch_sz
+        leftover_ex = num_examples % num_workers 
+        # Master sends subset of training data to workers
         X_per_worker = []
         y_per_worker = []
         if rank == 0:
-            X_per_worker = [X[k:k+num_ex_per_worker] for k in xrange(0, num_examples, num_ex_per_worker)]       
-            y_per_worker = [y[k:k+num_ex_per_worker] for k in xrange(0, num_examples, num_ex_per_worker)]       
-            X_per_worker.insert(0,None)
-            y_per_worker.insert(0,None)
+            X_per_worker = [X[k:k+num_ex_per_worker] for k in xrange(0, num_examples-leftover_ex, num_ex_per_worker)]       
+            y_per_worker = [y[k:k+num_ex_per_worker] for k in xrange(0, num_examples-leftover_ex, num_ex_per_worker)]       
 
+            # Allocate any leftover examples to the last worker
+            if leftover_ex > 0:
+                X_per_worker[num_workers-1] = X[num_ex_per_worker*(num_workers - 1):num_examples] 
+                y_per_worker[num_workers-1] = y[num_ex_per_worker*(num_workers - 1):num_examples] 
+        
         # Receive this worker's X and y elements
         my_X = comm.scatter(X_per_worker, root=0)
         my_y = comm.scatter(y_per_worker, root=0)
@@ -102,66 +105,44 @@ class parallel_network(object):
         accrued_dw = [0] * (self.num_layers-1)
         accrued_db = [0] * (self.num_layers-1)
         
-        #print "Types"
-        #print type(self.weights[0][0][0])
-        #print type(self.biases[0][0])
-        # Do asgd for each epoch
+        # Do sgd for each epoch
         for epoch in xrange(num_epochs):
-            comm.Barrier()
-                        
-            if rank == 0:
-                num_bcasts_gathers = batches_per_worker/nfetch
-                for step in range(batches_per_worker):
-                    # Broadcast params
-                    if step % nfetch == 0:
-                        self.weights = comm.bcast(self.weights, root=0)
-                        self.biases = comm.bcast(self.biases, root=0)
-                    
-                    # Get summed accrued dw updates
-                    if step % npush == 0:
-                        accrued_dw = comm.reduce(sendobj=accrued_dw, op=add_accrued, root=0)                     
-                        accrued_db = comm.reduce(sendobj=accrued_db, op=add_accrued, root=0)                                         
-                        # Apply updates
-                        self.weights = [w-(learning_rate/mini_batch_sz)*dw for w, dw in zip(self.weights, accrued_dw)]
-                        self.biases = [b-(learning_rate/mini_batch_sz)*db for b, db in zip(self.biases, accrued_db)]   
-                        accrued_dw = [0] * (self.num_layers-1)
-                        accrued_db = [0] * (self.num_layers-1)
-                if epoch > 0 and test_data:
-                    print "Epoch {0}".format(epoch) 
-                    print "Epoch {0}: {1} / {2}".format(epoch-1, self.evaluate(test_data[0], test_data[1]), n_test)
+            print "hi"
+            #if rank == 0:
+                #if epoch > 0 and test_data:
+                    #print "Epoch {0}: {1} / {2}".format(epoch-1, self.evaluate(test_data[0], test_data[1]), n_test)
                 
-            else:
-                my_X, my_y = shuffle(my_X, my_y)
-                mini_batches_x = [my_X[k:k+mini_batch_sz] for k in xrange(0, num_ex_per_worker, mini_batch_sz)]
-                mini_batches_y = [my_y[k:k+mini_batch_sz] for k in xrange(0, num_ex_per_worker, mini_batch_sz)] 
-                step = 0
+            my_X, my_y = shuffle(my_X, my_y)
+            my_leftover_ex = num_ex_per_worker % mini_batch_sz
+            mini_batches_x = [my_X[k:k+mini_batch_sz] for k in xrange(0, num_ex_per_worker-my_leftover_ex, mini_batch_sz)]
+            mini_batches_y = [my_y[k:k+mini_batch_sz] for k in xrange(0, num_ex_per_worker-my_leftover_ex, mini_batch_sz)] 
+            
+            step = 0
+            old_weights = copy.deepcopy(self.weights) 
+            old_biases = copy.deepcopy(self.biases) 
+    
+            for mb_x, mb_y in zip(mini_batches_x, mini_batches_y):
+                delta_w, delta_b = self.update_mini_batch(mb_x, mb_y, mini_batch_sz, learning_rate, reg_lambda)
 
-                for mb_x, mb_y in zip(mini_batches_x, mini_batches_y):
-                    #if step > 0:
-                    #    return
-                    if step % nfetch == 0:
-                        self.weights = comm.bcast(None, root=0)
-                        self.biases = comm.bcast(None, root=0)
-                                                
-                    delta_w, delta_b = self.update_mini_batch(mb_x, mb_y, mini_batch_sz, learning_rate, reg_lambda)
+                # Gradient descent
+                self.weights = [w-(learning_rate/mini_batch_sz)*dw for w, dw in zip(self.weights, delta_w)]
+                self.biases = [b-(learning_rate/mini_batch_sz)*db for b, db in zip(self.biases, delta_b)]   
+                
+                accrued_dw = [acdw + dw for acdw, dw in zip(accrued_dw, delta_w)]
+                accrued_db = [acdb + db for acdb, db in zip(accrued_db, delta_b)]
+                if step % npf == 0:
+                    accrued_dw = comm.allreduce(sendobj=accrued_dw, op=add_accrued)                     
+                    accrued_db = comm.allreduce(sendobj=accrued_db, op=add_accrued)                     
+                    # Apply updates
+                    self.weights = [w-(learning_rate/mini_batch_sz)*dw for w, dw in zip(old_weights, accrued_dw)]
+                    self.biases = [b-(learning_rate/mini_batch_sz)*db for b, db in zip(old_biases, accrued_db)]   
+                    # Reset variables
+                    accrued_dw = [0] * (self.num_layers-1)
+                    accrued_db = [0] * (self.num_layers-1)
+                    old_weights = self.weights#copy.deepcopy(self.weights) 
+                    old_biases = self.biases#copy.deepcopy(self.biases) 
 
-                    # Gradient descent
-                    self.weights = [w-(learning_rate/mini_batch_sz)*dw for w, dw in zip(self.weights, delta_w)]
-                    self.biases = [b-(learning_rate/mini_batch_sz)*db for b, db in zip(self.biases, delta_b)]   
-                    
-                    accrued_dw = [acdw + dw for acdw, dw in zip(accrued_dw, delta_w)]
-                    accrued_db = [acdb + db for acdb, db in zip(accrued_db, delta_b)]
-                    #print "my rank{0}".format(rank)
-                    #print delta_w[0]
-                    #print accrued_dw[0]
-                    
-                    if step % npush == 0:
-                        comm.reduce(sendobj=accrued_dw, op=add_accrued, root=0)                     
-                        comm.reduce(sendobj=accrued_db, op=add_accrued, root=0)                     
-                        accrued_dw = [0] * (self.num_layers-1)
-                        accrued_db = [0] * (self.num_layers-1)
-
-                    step += 1
+                step += 1
             #print "Epoch {0} complete".format(epoch)
     
     def update_mini_batch(self, x, y, mini_batch_sz, learning_rate, reg_lambda):
@@ -171,12 +152,9 @@ class parallel_network(object):
         delta_biases = [None] * (self.num_layers-1)
         for l in range(1, self.num_layers):
             if l == 1:
-                #err = self.activations[-1]-y
-                #err = err * sigmoid_prime(self.zs[-1])
                 err = self.activations[-1]
                 err[range(mini_batch_sz), y] -= 1
             else: 
-                #err = err.dot(self.weights[-l+1].T) * sigmoid_prime(self.zs[-1]) 
                 err = err.dot(self.weights[-l+1].T) * (1 - np.square(self.activations[-l]))
             delta_weights[-l] = self.activations[-l-1].T.dot(err)
             delta_biases[-l] = np.sum(err, axis=0, keepdims=True)
@@ -190,13 +168,9 @@ class parallel_network(object):
         self.zs = []
         self.activations = []
         self.activations.append(x)
-        #print type(self.activations[-1])
-        #print self.activations[-1]
-        #print self.weights[0] 
         for (b, w) in zip(self.biases, self.weights):
             self.zs.append(self.activations[-1].dot(w) + b)
             self.activations.append(np.tanh(self.zs[-1]))
-            #self.activations.append(sigmoid(self.zs[-1]))
         
         self.activations[-1] = self.softmax(self.zs[-1])
     
