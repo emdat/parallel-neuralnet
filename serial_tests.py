@@ -1,5 +1,5 @@
-from sklearn import datasets, linear_model
-from sklearn.utils import shuffle
+#from sklearn import datasets, linear_model
+#from sklearn.utils import shuffle
 import matplotlib.pyplot as plt
 import numpy as np 
 from lib_serial import mnist_loader

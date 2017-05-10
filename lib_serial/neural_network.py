@@ -16,8 +16,13 @@ Link to file: https://github.com/mnielsen/neural-networks-and-deep-learning/blob
 
 import random
 import numpy as np
-from sklearn import datasets, linear_model
-from sklearn.utils import shuffle
+#from sklearn import datasets, linear_model
+#from sklearn.utils import shuffle
+
+def shuffle(X, y):
+#    print X
+    p = np.random.permutation(len(X))
+    return X[p], y[p]
 
 def sigmoid(z):
     """The sigmoid function."""
@@ -52,7 +57,7 @@ class neural_network(object):
             n_test = len(test_data[0])
         
         for epoch in xrange(num_epochs):
-            X, y = shuffle(X, y, random_state=0)
+            X, y = shuffle(X, y)
             mini_batches_x = [X[k:k+mini_batch_sz] for k in xrange(0, num_examples, mini_batch_sz)]
             mini_batches_y = [y[k:k+mini_batch_sz] for k in xrange(0, num_examples, mini_batch_sz)]
             for mb_x, mb_y in zip(mini_batches_x, mini_batches_y):
