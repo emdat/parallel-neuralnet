@@ -1,11 +1,10 @@
 """
 parallel_network.py
 ~~~~~~~~~~
-A module to implement the stochastic gradient descent learning
-algorithm for a feedforward neural network.  Gradients are calculated
-using backpropagation.  
+A module to implement parallel minibatch gradient descent learning
+algorithm for a feedforward neural network. 
 
-Largely adapted from:
+The serial version of this code was somewhat adapted from:
 1) Denny Britz's tutorial on implementing a neural network
 Link to tutorial: http://www.wildml.com/2015/09/implementing-a-neural-network-from-scratch/
 Link to file in Github: https://github.com/dennybritz/nn-from-scratch/blob/master/ann_classification.py 
@@ -14,51 +13,32 @@ file src/network.py.
 Link to file: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/mnist_loader.py
 """
 
+import time
 import random
 import copy
 import numpy as np
-#from sklearn import datasets, linear_model
-#from sklearn.utils import shuffle
 from mpi4py import rc
 rc.initialize = False
 from mpi4py import MPI
 from operator import add
-nfetch = 5
-npush = 5
 
-
+# Shuffle lists X and y in unison
 def shuffle(X, y):
     p = np.random.permutation(len(X))
     return X[p], y[p]
 
+# Add the two lists element-wise
 def add_accrued(x, y): 
     return [tot + inc for tot, inc in zip(x, y)]
 
-def add_grad(x, y):
-    learning_rate = 3.0
-    mini_batch_sz = 10
-    # Gradient descent
-    #i = 0
-    #for w, dw in zip(x, y):
-    #    x[i] = w-(learning_rate/mini_batch_sz)*dw
-    #    i += 1
-    x += -(learning_rate/mini_batch_sz)*y 
-    #x = [w-(learning_rate/mini_batch_sz)*dw for w, dw in zip(x, y)]
-    return x
-
-def sigmoid(z):
-    """The sigmoid function."""
-    return 1.0/(1.0+np.exp(-z))
-
-def sigmoid_prime(z):
-    """Derivative of the sigmoid function."""
-    return sigmoid(z)*(1-sigmoid(z))
-
 class parallel_network(object):
 
-    def __init__(self, layer_dims):
+    # Create an instance of a parallel neural network
+    def __init__(self, layer_dims, reg_lambda=0.01, npf=1):
         self.layer_dims = layer_dims
         self.num_layers = len(layer_dims)
+        self.reg_lambda = reg_lambda
+        self.npf = npf
         self.weights = []
         self.biases = [] 
         for i in range(1, self.num_layers):
@@ -67,17 +47,21 @@ class parallel_network(object):
         self.weights = np.asarray(self.weights)
         self.biases = np.asarray(self.biases)    
 
-    def train(self, train_data, num_epochs, mini_batch_sz=200, learning_rate=0.01, test_data=None):
+    # Train the network on the training data given, which has the input data as a its first attribute
+    # and the inputs' correct classifications as its second attribute. 
+    def train(self, train_data, num_epochs, mini_batch_sz, learning_rate=0.01, test_data=None):
         X = train_data[0]
         y = train_data[1]
         num_examples = len(X)
+        MPI.Init()
         self.sgd(X, y, num_examples, num_epochs, test_data, mini_batch_sz, learning_rate)
-    
-    def sgd(self, X, y, num_examples, num_epochs, test_data, mini_batch_sz, learning_rate, reg_lambda=0.01, npf=1):
+        MPI.Finalize()
+   
+    # Conduct minibatch (stochastic) gradient descent on the training data given as X, y
+    def sgd(self, X, y, num_examples, num_epochs, test_data, mini_batch_sz, learning_rate):
         if test_data: 
             n_test = len(test_data[0])
       
-        MPI.Init()
         comm = MPI.COMM_WORLD
         nprocs = comm.Get_size()
         rank   = comm.Get_rank()
@@ -86,6 +70,7 @@ class parallel_network(object):
         num_ex_per_worker = num_examples/num_workers
         batches_per_worker = num_ex_per_worker/mini_batch_sz
         leftover_ex = num_examples % num_workers 
+        
         # Master sends subset of training data to workers
         X_per_worker = []
         y_per_worker = []
@@ -105,13 +90,17 @@ class parallel_network(object):
         accrued_dw = [0] * (self.num_layers-1)
         accrued_db = [0] * (self.num_layers-1)
         
+        comm.Barrier()
+        tot_communic_time = 0.0
+        tot_eval_time = 0.0
+        if rank == 0: # Start timer for entirety of sgd 
+            start_sgd_time = time.clock()
+        
         # Do sgd for each epoch
         for epoch in xrange(num_epochs):
-            print "hi"
-            #if rank == 0:
-                #if epoch > 0 and test_data:
-                    #print "Epoch {0}: {1} / {2}".format(epoch-1, self.evaluate(test_data[0], test_data[1]), n_test)
-                
+            
+            # Randomize the examples. Ensure all processes have the same number of minibatches 
+            # (necessary for correct coordination). 
             my_X, my_y = shuffle(my_X, my_y)
             my_leftover_ex = num_ex_per_worker % mini_batch_sz
             mini_batches_x = [my_X[k:k+mini_batch_sz] for k in xrange(0, num_ex_per_worker-my_leftover_ex, mini_batch_sz)]
@@ -121,8 +110,9 @@ class parallel_network(object):
             old_weights = copy.deepcopy(self.weights) 
             old_biases = copy.deepcopy(self.biases) 
     
+            # Iterate through the minibatches
             for mb_x, mb_y in zip(mini_batches_x, mini_batches_y):
-                delta_w, delta_b = self.update_mini_batch(mb_x, mb_y, mini_batch_sz, learning_rate, reg_lambda)
+                delta_w, delta_b = self.update_mini_batch(mb_x, mb_y, mini_batch_sz, learning_rate)
 
                 # Gradient descent
                 self.weights = [w-(learning_rate/mini_batch_sz)*dw for w, dw in zip(self.weights, delta_w)]
@@ -130,22 +120,50 @@ class parallel_network(object):
                 
                 accrued_dw = [acdw + dw for acdw, dw in zip(accrued_dw, delta_w)]
                 accrued_db = [acdb + db for acdb, db in zip(accrued_db, delta_b)]
-                if step % npf == 0:
+                
+                if step % self.npf == 0:
+                    start_communic_time = time.clock()
                     accrued_dw = comm.allreduce(sendobj=accrued_dw, op=add_accrued)                     
                     accrued_db = comm.allreduce(sendobj=accrued_db, op=add_accrued)                     
+                    end_communic_time = time.clock()
+                    tot_communic_time += end_communic_time - start_communic_time
                     # Apply updates
                     self.weights = [w-(learning_rate/mini_batch_sz)*dw for w, dw in zip(old_weights, accrued_dw)]
                     self.biases = [b-(learning_rate/mini_batch_sz)*db for b, db in zip(old_biases, accrued_db)]   
                     # Reset variables
                     accrued_dw = [0] * (self.num_layers-1)
                     accrued_db = [0] * (self.num_layers-1)
-                    old_weights = self.weights#copy.deepcopy(self.weights) 
-                    old_biases = self.biases#copy.deepcopy(self.biases) 
+                    old_weights = copy.deepcopy(self.weights) 
+                    old_biases = copy.deepcopy(self.biases) 
+            
+            # Evaluate the parameters on the test data. We will exclude this from our overall timings. 
+            if test_data: 
+                comm.Barrier()
+                start_eval_time = time.clock()
+                if rank == 0:
+                    print "Epoch {0}: {1} / {2}".format(epoch, self.evaluate(test_data[0], test_data[1]), n_test)
+                comm.Barrier()
+                stop_eval_time = time.clock()
+                if rank==0:
+                    tot_eval_time += stop_eval_time - start_eval_time
 
                 step += 1
-            #print "Epoch {0} complete".format(epoch)
-    
-    def update_mini_batch(self, x, y, mini_batch_sz, learning_rate, reg_lambda):
+        
+        comm.Barrier()
+        # Print timings
+        if rank == 0:
+            end_sgd_time = time.clock()
+            print "{0} proccesses | {1} seconds for {2} epochs, {3} examples, {4} batch_sz".format(
+                                                                        nprocs, 
+                                                                        end_sgd_time - start_sgd_time - tot_eval_time, 
+                                                                        num_epochs,
+                                                                        num_examples,
+                                                                        mini_batch_sz)
+            if test_data:
+                print "{0} seconds for evaluation.".format(tot_eval_time) 
+        print "\tRank {0}: {1} seconds on communications".format(rank, tot_communic_time)
+
+    def update_mini_batch(self, x, y, mini_batch_sz, learning_rate):
         self.fwd_prop(x)
         # Back propagation
         delta_weights = [None] * (self.num_layers-1)
@@ -159,7 +177,7 @@ class parallel_network(object):
             delta_weights[-l] = self.activations[-l-1].T.dot(err)
             delta_biases[-l] = np.sum(err, axis=0, keepdims=True)
             # Regularization
-            delta_weights[-l] += reg_lambda * self.weights[-l]    
+            delta_weights[-l] += self.reg_lambda * self.weights[-l]    
         
         return delta_weights, delta_biases     
     
@@ -177,42 +195,19 @@ class parallel_network(object):
     def softmax(self, x):
         # Generate probabilties
         e_x = np.exp(x - np.max(x)) # Normalize to prevent overflow
-        #return np.exp(input) / np.sum(np.exp(input), axis=1, keepdims=True)
         return e_x / np.sum(e_x, axis=1, keepdims=True)
         
     def evaluate(self, X, y):
-        """Return the number of test inputs for which the neural
-        network outputs the correct result. Note that the neural
-        network's output is assumed to be the index of whichever
-        neuron in the final layer has the highest activation."""
+        """Return the total number of test inputs for which the neural
+        network outputs the correct classification result.""" 
         test_results = []
         for x, y in zip(X, y):
             self.fwd_prop(x)
             probs = self.activations[-1]
-            #print probs
             test_results.append((np.argmax(probs, axis=1), y))
-            #print test_results[-1]
         return sum(int(xx == yy) for (xx, yy) in test_results)
 
+    # Predict the classification for input x. 
     def predict(self, x):
         self.fwd_prop(x)
         return np.argmax(self.activations[-1], axis=1)
-    
-    # Helper function to evaluate the total loss on the datase
-    def calculate_loss(model, X, y):
-        num_examples = len(X)  # training set size
-        W1, b1, W2, b2 = model['W1'], model['b1'], model['W2'], model['b2']
-        # Forward propagation to calculate our predictions
-        z1 = X.dot(W1) + b1
-        a1 = np.tanh(z1)
-        z2 = a1.dot(W2) + b2
-        exp_scores = np.exp(z2)
-        probs = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
-        # Calculating the loss
-        corect_logprobs = -np.log(probs[range(num_examples), y])
-        data_loss = np.sum(corect_logprobs)
-        # Add regulatization term to loss (optional)
-        data_loss += Config.reg_lambda / 2 * (np.sum(np.square(W1)) + np.sum(np.square(W2)))
-        return 1. / num_examples * data_loss
-    
-

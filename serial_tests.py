@@ -1,13 +1,20 @@
 import numpy as np 
 from lib import mnist_loader, serial_network
+import sys 
 
-def mnist():
-    training_data, validation_data, test_data = mnist_loader.load_data_wrapper()
-    #print training_data[1]
-    nnet = serial_network.neural_network([784, 30, 70, 20,  10])
-    #def train(self, train_data, num_epochs, mini_batch_sz=200, learning_rate=0.01, test_data=None):
-    nnet.train(training_data, 30, 10, 0.01, test_data)
+def mnist(num_train=None, mini_batch_size=10, num_epochs=30):
+    training_data, validation_data, test_data = mnist_loader.load_data_wrapper(num_train=num_train)
+    nnet = serial_network.serial_network([784, 30,  10])
+    nnet.train(training_data, num_epochs, mini_batch_sz, 0.01, test_data)
 
-mnist()
-#moons()
-
+np.random.seed(0)
+num_train = None
+mini_batch_sz = 10
+num_epochs=30
+if len(sys.argv) > 1:
+    num_train = int(sys.argv[1])
+if len(sys.argv) > 2:
+    mini_batch_sz = int(sys.argv[2])
+if len(sys.argv) > 3:
+    num_epochs = int(sys.argv[3])
+mnist(num_train, mini_batch_sz, num_epochs)

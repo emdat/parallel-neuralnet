@@ -2,7 +2,7 @@
 mnist_loader
 ~~~~~~~~~~~~
 A library to load the MNIST image data.
-Adapted from mnielsen's neural-networks-and-deep-learning reposity on GitHub, 
+From mnielsen's neural-networks-and-deep-learning reposity on GitHub, 
 file src/mnist_loader.py. 
 Link to file: https://github.com/mnielsen/neural-networks-and-deep-learning/blob/master/src/mnist_loader.py
 """
@@ -39,33 +39,23 @@ def load_data():
     f.close()
     return (training_data, validation_data, test_data)
 
-def load_data_wrapper():
+def load_data_wrapper(num_train=None, num_test=None, num_val=None):
     """Return a tuple containing ``(training_data, validation_data,
     test_data)``. Based on ``load_data``, but the format is more
     convenient for use in our implementation of neural networks.
-    In particular, ``training_data`` is a list containing 50,000
-    2-tuples ``(x, y)``.  ``x`` is a 784-dimensional numpy.ndarray
-    containing the input image.  ``y`` is a 10-dimensional
-    numpy.ndarray representing the unit vector corresponding to the
-    correct digit for ``x``.
-    ``validation_data`` and ``test_data`` are lists containing 10,000
-    2-tuples ``(x, y)``.  In each case, ``x`` is a 784-dimensional
-    numpy.ndarry containing the input image, and ``y`` is the
-    corresponding classification, i.e., the digit values (integers)
-    corresponding to ``x``.
-    Obviously, this means we're using slightly different formats for
-    the training data and the validation / test data.  These formats
-    turn out to be the most convenient for use in our neural network
-    code."""
+    Each dataset is a list/array for X (the signal) and y (the 
+    classification) separately."""
     tr_d, va_d, te_d = load_data()
     training_inputs = [np.reshape(x, 784) for x in tr_d[0]]
-    #training_results = [vectorized_result(y) for y in tr_d[1]]
     training_data = np.asarray(training_inputs), np.asarray(tr_d[1])
-    #training_data = zip(training_inputs, training_results)
     validation_inputs = [np.reshape(x, 784) for x in va_d[0]]
     validation_data = np.asarray(validation_inputs), np.asarray(va_d[1])
-    #validation_data = zip(validation_inputs, va_d[1])
     test_inputs = [np.reshape(x, 784) for x in te_d[0]]
     test_data = np.asarray(test_inputs), np.asarray(te_d[1])
-    #test_data = zip(test_inputs, te_d[1])
+    if num_train:
+        training_data = training_data[:num_train]
+    if num_test:
+        test_data = test_data[:num_test]
+    if num_val:
+        validation_data = validation_data[:num_val]
     return (training_data, validation_data, test_data)

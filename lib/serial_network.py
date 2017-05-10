@@ -1,11 +1,10 @@
 """
-neural_network.py
+serial_network.py
 ~~~~~~~~~~
-A module to implement the stochastic gradient descent learning
-algorithm for a feedforward neural network.  Gradients are calculated
-using backpropagation.  
+A module to implement serial minibatch gradient descent learning
+algorithm for a feedforward neural network.  
 
-Largely adapted from:
+Serial version adapted using:
 1) Denny Britz's tutorial on implementing a neural network
 Link to tutorial: http://www.wildml.com/2015/09/implementing-a-neural-network-from-scratch/
 Link to file in Github: https://github.com/dennybritz/nn-from-scratch/blob/master/ann_classification.py 
@@ -16,12 +15,13 @@ Link to file: https://github.com/mnielsen/neural-networks-and-deep-learning/blob
 
 import random
 import numpy as np
+import time 
 
 def shuffle(X, y):
     p = np.random.permutation(len(X))
     return X[p], y[p]
 
-class neural_network(object):
+class serial_network(object):
 
     def __init__(self, layer_dims):
         self.layer_dims = layer_dims
@@ -41,15 +41,31 @@ class neural_network(object):
     def sgd(self, X, y, num_examples, num_epochs, test_data, mini_batch_sz, learning_rate, reg_lambda=0.01):
         if test_data: 
             n_test = len(test_data[0])
-        
+       
+        tot_eval_time = 0.0
+        start_sgd_time = time.clock()
         for epoch in xrange(num_epochs):
             X, y = shuffle(X, y)
             mini_batches_x = [X[k:k+mini_batch_sz] for k in xrange(0, num_examples, mini_batch_sz)]
             mini_batches_y = [y[k:k+mini_batch_sz] for k in xrange(0, num_examples, mini_batch_sz)]
             for mb_x, mb_y in zip(mini_batches_x, mini_batches_y):
                 self.update_mini_batch(mb_x, mb_y, mini_batch_sz, learning_rate, reg_lambda)
+        
+            start_eval_time = time.clock()
             if test_data: 
                 print "Epoch {0}: {1} / {2}".format(epoch, self.evaluate(test_data[0], test_data[1]), n_test)
+            end_eval_time = time.clock()
+            tot_eval_time += end_eval_time - start_eval_time
+
+        end_sgd_time = time.clock()
+
+        # Print timing data
+        print "Serial | {0} seconds for {1} epochs, {2} examples, {3} batch_sz".format(
+                                                        end_sgd_time - start_sgd_time - tot_eval_time, 
+                                                        num_epochs,
+                                                        num_examples, mini_batch_sz) 
+        if test_data:
+            print "{0} seconds for evaluation.".format(tot_eval_time) 
 
     def update_mini_batch(self, x, y, mini_batch_sz, learning_rate, reg_lambda):
         self.fwd_prop(x)
@@ -85,14 +101,11 @@ class neural_network(object):
     def softmax(self, x):
         # Generate probabilties
         e_x = np.exp(x - np.max(x)) # Normalize to prevent overflow
-        #return np.exp(input) / np.sum(np.exp(input), axis=1, keepdims=True)
         return e_x / np.sum(e_x, axis=1, keepdims=True)
         
     def evaluate(self, X, y):
         """Return the number of test inputs for which the neural
-        network outputs the correct result. Note that the neural
-        network's output is assumed to be the index of whichever
-        neuron in the final layer has the highest activation."""
+        network outputs the correct classification."""
         test_results = []
         for x, y in zip(X, y):
             self.fwd_prop(x)
